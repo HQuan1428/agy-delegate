@@ -2,10 +2,14 @@
 
 Claude Code plugin: Claude plans, splits work into tasks and reviews; [Antigravity CLI](https://antigravity.google) (`agy`) executes them in parallel, each in its own git worktree. Optional shared memory between Claude and agy via [ai-memory](https://github.com/akitaonrails/ai-memory).
 
-- `bin/agy-fanout run <tasks-dir> [jobs]`: runs every `*.md` in the dir through `agy -p --dangerously-skip-permissions`, one worktree/branch (`task/<name>`) per task, `jobs` at a time (default 4). `status` lists task branches, `clean` removes merged ones.
+- `bin/agy-fanout run <tasks-dir> [jobs]`: runs every `*.md` in the dir through `agy -p --dangerously-skip-permissions`, one worktree/branch (`task/<name>`) per task, `jobs` at a time (default 4). `<tasks-dir>/_plan.md` is not a task: it is prepended to every task prompt (shared context, written once).
+- `agy-fanout review <tasks-dir>`: one compact report for the whole batch: OK/FAIL, diffstat, changed files outside the task's `Files:` line, result of its `Verify:` command run in the worktree, log tail on FAIL. Exits 1 on any problem.
+- `agy-fanout status` lists task branches, `clean` removes merged ones.
 - `skills/delegate`: the plan → split → run → review → merge workflow (`/agy-delegate:delegate`).
 
-Env: `AGY_JOBS` (default 4), `AGY_TIMEOUT` (per task, default `30m`), `AGY_RUN` (memory run id, default timestamp).
+Env: `AGY_JOBS` (default 4), `AGY_TIMEOUT` (per task, default `30m`), `AGY_MEMORY=1` (save worker reports to ai-memory), `AGY_RUN` (memory run id, default timestamp).
+
+Why this shape: Claude's cost is roughly tool calls × conversation size, so `_plan.md` saves writing shared context N times and `review` turns several calls per task into one.
 
 ## Install
 
@@ -24,10 +28,9 @@ ai-memory setup --agent claude-code --agent antigravity-cli
 ai-memory doctor
 ```
 
-When `ai-memory` is on `PATH`, `agy-fanout` does three things:
-- Prepends a short instruction to each task telling agy to read `notes/delegate/<run>/plan.md`, which Claude writes.
-- Tells agy to write `notes/delegate/<run>/<task>.md` when done. All calls are scoped to the repo's project: `.ai-memory.toml`, else the `upstream`/`origin` remote as `owner-repo`, else the dir name.
-- After each task, runs `ai-memory finalize-session --agent antigravity-cli --session-id <id>`.
+Workers never call memory tools: on a one-file task, agy took 124–147k tokens / 90–154s when it read and wrote memory via MCP, versus 26k tokens / 14s with memory handled outside it. Claude reads memory once and folds what matters into `_plan.md`; `agy-fanout` writes memory via the `ai-memory` CLI.
+
+When `ai-memory` is on `PATH`, each worktree gets an `.ai-memory.toml` pinning it to the repo's project (`.ai-memory.toml`, else the `upstream`/`origin` remote as `owner-repo`, else the dir name), and after each task `agy-fanout` runs `ai-memory finalize-session --agent antigravity-cli --session-id <id>`. With `AGY_MEMORY=1` it also saves each worker's final report as `notes/delegate/<run>/<task>.md`.
 
 Without ai-memory everything still works, just without memory.
 
