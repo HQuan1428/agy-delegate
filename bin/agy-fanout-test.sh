@@ -46,6 +46,8 @@ grep -q 'project="acme-api"' .worktrees/b/prompt.txt || fail "project scope"
 grep -q 'notes/delegate/r1/b.md' .worktrees/b/prompt.txt || fail "notes path"
 grep -q -- '--session-id c-b' "$T/memcalls" || fail "finalize b"
 grep -q -- '--all' "$T/memcalls" && fail "never --all"
+grep -q 'project = "acme-api"' .worktrees/b/.ai-memory.toml || fail "worktree marker"
+git show --stat task/b | grep -q ai-memory.toml && fail "marker committed"
 [ -f tasks/a.log.1 ] || fail "log rotation"
 
 # 3. guards
