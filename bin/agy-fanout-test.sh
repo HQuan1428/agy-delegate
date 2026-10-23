@@ -22,13 +22,14 @@ chmod +x "$T/stub/"*
 
 cd "$T/repo"
 git init -q -b main && git config user.email t@t && git config user.name t
-git remote add origin git@github.com:acme/api.git
+git remote add origin git@github.com:Acme/API.git
 echo hi > README && git add README && git commit -qm init
 mkdir tasks && echo "do a" > tasks/a.md && echo "do b" > tasks/b.md
 echo tasks/ >> .git/info/exclude
 
 # 1. without ai-memory: both OK, no memory header
-PATH="$T/nomem:$PATH"; mkdir -p "$T/nomem"; ln -s "$T/stub/agy" "$T/nomem/agy"
+# isolate from real agy/ai-memory in ~/.local/bin
+PATH="$T/nomem:/usr/local/bin:/usr/bin:/bin"; mkdir -p "$T/nomem"; ln -s "$T/stub/agy" "$T/nomem/agy"
 "$FANOUT" run tasks 2 > "$T/o1" 2>&1 || { cat "$T/o1"; fail "run 1 exit"; }
 grep -q 'done: 2 OK / 0 FAIL' "$T/o1" || fail "summary 1"
 grep -q 'without shared memory' "$T/o1" || fail "no-memory warning"

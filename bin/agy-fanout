@@ -56,7 +56,7 @@ memory_scope() {
     url=$(git -C "$ROOT" remote get-url upstream 2>/dev/null || git -C "$ROOT" remote get-url origin 2>/dev/null || true)
     url=${url%.git}; url=${url%/}
     # shortcut: last two path segments only, matches github/gitlab-style remotes
-    [ -n "$url" ] && PROJECT=$(printf %s "$url" | tr ':' '/' | awk -F/ '{print $(NF-1) "-" $NF}')
+    [ -n "$url" ] && PROJECT=$(printf %s "$url" | tr ':' '/' | awk -F/ '{print tolower($(NF-1) "-" $NF)}')
   fi
   PROJECT=${PROJECT:-$(basename "$ROOT")}
 }
@@ -84,7 +84,8 @@ run_one() {
   python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("response",""))' "$out" >> "$log" 2>/dev/null || cat "$out" >> "$log"
   if [ "$MEMORY" = 1 ]; then
     id=$(sed -n 's/.*"conversation_id":"\([^"]*\)".*/\1/p' "$out")
-    [ -n "$id" ] && { ai-memory finalize-session --agent antigravity-cli --session-id "$id" >> "$log" 2>&1 \
+    [ -n "$id" ] && { ai-memory finalize-session --agent antigravity-cli --session-id "$id" \
+      --workspace "$WORKSPACE" --project "$PROJECT" >> "$log" 2>&1 \
       || echo "warn: ai-memory finalize failed for $name" >&2; }
   fi
   if grep -q '"status":"SUCCESS"' "$out"; then
