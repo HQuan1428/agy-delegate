@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "agy-delegate",
+  "description": "Delegate planned work from Claude Code to parallel agy workers.",
+  "owner": {
+    "name": "HQuan1428",
+    "url": "https://github.com/HQuan1428"
+  },
+  "plugins": [
+    {
+      "name": "agy-delegate",
+      "description": "Plan with Claude, execute with agy in parallel worktrees, review and merge.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}
