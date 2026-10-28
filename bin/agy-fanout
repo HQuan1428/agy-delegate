@@ -4,11 +4,15 @@
 #            git worktree .worktrees/<name> on branch task/<name>. <tasks-dir>/_plan.md, if present,
 #            is prepended to every task prompt. Output: <tasks-dir>/<name>.log (+ .json).
 #            Re-running reuses existing worktrees. Exits 1 if any task fails.
+#            Every task needs a `Spec: specs/x.md` line naming a spec committed on the base branch
+#            with a `Status: approved` line. A task with a `Tests:` line is TDD: agy must not edit
+#            those files, and while its `Verify:` is red agy is re-run with the failure, AGY_RETRIES times.
 #   review : per task: OK/FAIL, commits, diffstat, files outside the task's `Files:` line, result of
-#            its `Verify:` command run in the worktree, log tail on FAIL. Exits 1 on any problem.
+#            its `Verify:` command run in the worktree, log tail on FAIL, `SPEC-ISSUE:` lines from the
+#            log, changed `Tests:` files, task ACs (AC-n / AC_n) with no test. Exits 1 on any problem.
 #   status : list task/* branches (commits ahead of base, merged?, worktree?).
 #   clean  : remove worktree + branch of every task/* already merged into the current branch.
-# Env: AGY_JOBS (default 4), AGY_TIMEOUT (default 30m), AGY_RUN (memory run id, default timestamp),
+# Env: AGY_JOBS (default 4), AGY_TIMEOUT (default 30m), AGY_RETRIES (TDD re-runs, default 2), AGY_RUN (memory run id, default timestamp),
 #      AGY_MEMORY=1 (save each worker's final report to ai-memory as notes/delegate/<run>/<name>.md).
 # If `ai-memory` is installed, worktrees are pinned to the repo's memory project and each agy
 # session is finalized after, so its hooks capture into the right project.
@@ -24,6 +28,10 @@ export ROOT BASE
 task_branches() { git -C "$ROOT" for-each-ref --format='%(refname:short)' refs/heads/task/; }
 # TASKS = every <dir>/*.md except the shared _plan.md
 list_tasks() { local f; shopt -s nullglob; TASKS=(); for f in "$1"/*.md; do [ "${f##*/}" = _plan.md ] || TASKS+=("$f"); done; }
+# field <task.md> <Name>: value of the first "Name:" line, backticks removed
+field() { sed -n "s/^$2: *//p" "$1" | head -1 | tr -d '`'; }
+# match_any <path> <pattern>...: path matches a glob, or lies under a dir/ pattern
+match_any() { local c=$1 pat; shift; for pat; do [[ $c == $pat || $c == ${pat%/}/* ]] && return 0; done; return 1; }
 response() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("response",""))' "$1"; }
 
 cmd_status() {
@@ -50,30 +58,48 @@ cmd_clean() {
   done
 }
 
+# worker said the spec/tests cannot be met; 0 if any such line
+spec_issues() { grep 'SPEC-ISSUE:' "$1" 2>/dev/null | sed 's/^/   spec-issue: /'; }
+
 # one compact block per task, so the lead reviews a whole batch in one call
 cmd_review() {
   [ $# -ge 1 ] && [ -d "$1" ] || usage
-  local dir f name b wt files pats pat c ok cmd out bad=0
+  local dir f name b wt files tests body ac pats c ok cmd out bad=0
   dir=$(realpath "$1"); list_tasks "$dir"
   for f in ${TASKS[@]+"${TASKS[@]}"}; do
     name=$(basename "$f" .md); b="task/$name"; wt="$ROOT/.worktrees/$name"
     if ! git -C "$ROOT" show-ref -q --verify "refs/heads/$b"; then echo "== $name  NOT RUN"; bad=1; continue; fi
     if ! grep -q '"status":"SUCCESS"' "$dir/$name.json" 2>/dev/null; then
-      echo "== $name  FAIL"; tail -n 20 "$dir/$name.log" 2>/dev/null | sed 's/^/   | /' || true; bad=1; continue
+      echo "== $name  FAIL"; spec_issues "$dir/$name.log" || true
+      tail -n 20 "$dir/$name.log" 2>/dev/null | sed 's/^/   | /' || true; bad=1; continue
     fi
     echo "== $name  OK  +$(git -C "$ROOT" rev-list --count "$BASE..$b") commits $(git -C "$ROOT" diff --shortstat "$BASE...$b")"
+    spec_issues "$dir/$name.log" && bad=1
     # scope: every changed file must match a pattern on the task's "Files:" line (dir/ matches below it)
-    files=$(sed -n 's/^Files: *//p' "$f" | head -1 | tr -d '`' | tr ',' ' ')
+    files=$(field "$f" Files | tr ',' ' ')
     if [ -z "$files" ]; then echo "   scope: unchecked (no Files: line)"
     else
       read -ra pats <<< "$files"; ok=1
       while IFS= read -r c; do
-        for pat in "${pats[@]}"; do [[ $c == $pat || $c == ${pat%/}/* ]] && continue 2; done
+        match_any "$c" "${pats[@]}" && continue
         echo "   scope: OUT  $c"; ok=0; bad=1
       done < <(git -C "$ROOT" diff --name-only "$BASE...$b")
       [ "$ok" = 0 ] || echo "   scope: ok"
     fi
-    cmd=$(sed -n 's/^Verify: *//p' "$f" | head -1); cmd=${cmd#\`}; cmd=${cmd%\`}
+    # TDD: tests are fixed on base, and every AC the task names needs a test mentioning it
+    tests=$(field "$f" Tests | tr ',' ' ')
+    if [ -n "$tests" ]; then
+      read -ra pats <<< "$tests"
+      while IFS= read -r c; do
+        if match_any "$c" "${pats[@]}"; then echo "   tests: CHANGED  $c"; bad=1; fi
+      done < <(git -C "$ROOT" diff --name-only "$BASE...$b")
+      body=$(git -C "$ROOT" ls-tree -r --name-only "$BASE" | while IFS= read -r c; do
+        if match_any "$c" "${pats[@]}"; then git -C "$ROOT" show "$BASE:$c"; fi; done)
+      for ac in $(grep -o 'AC-[0-9]\+' "$f" | sort -u); do
+        grep -qiE "AC[-_]${ac#AC-}([^0-9]|$)" <<< "$body" || { echo "   ac: missing  $ac"; bad=1; }
+      done
+    fi
+    cmd=$(verify_cmd "$f")
     # shortcut: no per-command timeout (timeout(1) is missing on macOS); add one if verify commands can hang
     if [ -z "$cmd" ]; then echo "   verify: none (no Verify: line)"
     elif [ ! -d "$wt" ]; then echo "   verify: skipped (no worktree)"
@@ -102,20 +128,13 @@ memory_scope() {
   PROJECT=${PROJECT:-$(basename "$ROOT")}
 }
 
-run_one() {
-  local f=$1 name wt out log prompt id
-  name=$(basename "$f" .md); wt="$ROOT/.worktrees/$name"
-  out="$DIR/$name.json"; log="$DIR/$name.log"
-  [ -f "$log" ] && mv "$log" "$log.1"
-  prompt=$(cat "$f")
-  [ -f "$DIR/_plan.md" ] && prompt="# Shared plan (context for every task)
-$(cat "$DIR/_plan.md")
+verify_cmd() { local c; c=$(sed -n 's/^Verify: *//p' "$1" | head -1); c=${c#\`}; printf '%s' "${c%\`}"; }
 
----
-# Your task (do only this)
-$prompt"
-  (cd "$wt" && agy -p "$prompt" --dangerously-skip-permissions \
-      --print-timeout "$AGY_TIMEOUT" --output-format json) > "$out" 2> "$log" || true
+# one agy session in the task's worktree (uses run_one's locals); commits its changes, 0 on SUCCESS
+agy_once() {
+  local id
+  (cd "$wt" && agy -p "$1" --dangerously-skip-permissions \
+      --print-timeout "$AGY_TIMEOUT" --output-format json) > "$out" 2>> "$log" || true
   response "$out" >> "$log" 2>/dev/null || cat "$out" >> "$log"
   if [ "$HAVE_MEM" = 1 ]; then
     id=$(sed -n 's/.*"conversation_id":"\([^"]*\)".*/\1/p' "$out")
@@ -129,13 +148,45 @@ $prompt"
       --path "notes/delegate/$RUN/$name.md" --title "delegate $RUN: $name" --body - >> "$log" 2>&1 \
       || echo "warn: ai-memory write-page failed for $name" >&2
   fi
-  if grep -q '"status":"SUCCESS"' "$out"; then
-    git -C "$wt" add -A
-    git -C "$wt" diff --cached --quiet || git -C "$wt" commit -qm "task: $name"
-    echo "OK    $name  ($(git -C "$ROOT" rev-list --count "$BASE..task/$name") commits)"
-  else
-    echo "FAIL  $name  (see $log)"
+  grep -q '"status":"SUCCESS"' "$out" || return 1
+  git -C "$wt" add -A
+  git -C "$wt" diff --cached --quiet || git -C "$wt" commit -qm "task: $name"
+}
+
+run_one() {
+  local f=$1 name wt out log prompt tests cmd vout n=0
+  name=$(basename "$f" .md); wt="$ROOT/.worktrees/$name"
+  out="$DIR/$name.json"; log="$DIR/$name.log"
+  [ -f "$log" ] && mv "$log" "$log.1"
+  prompt=$(cat "$f")
+  [ -f "$DIR/_plan.md" ] && prompt="# Shared plan (context for every task)
+$(cat "$DIR/_plan.md")
+
+---
+# Your task (do only this)
+$prompt"
+  tests=$(field "$f" Tests); cmd=$(verify_cmd "$f")
+  [ -n "$tests" ] && prompt="$prompt
+
+---
+The tests ($tests) and the spec are fixed: never edit them. Run \`$cmd\` yourself and keep
+changing the code until it passes. If the spec or the tests make that impossible, stop and end
+your report with one line: SPEC-ISSUE: <why>"
+  agy_once "$prompt" || { echo "FAIL  $name  (see $log)"; return; }
+  # TDD: while Verify is red, run agy again with the failure
+  if [ -n "$tests" ] && [ -n "$cmd" ]; then
+    while ! vout=$(cd "$wt" && bash -c "$cmd" 2>&1 </dev/null); do
+      [ "$n" -lt "$AGY_RETRIES" ] || { echo "FAIL  $name  (verify red after $n retries, see $log)"; return; }
+      n=$((n + 1)); echo "--- retry $n: verify red" >> "$log"
+      agy_once "$prompt
+
+---
+# Verify failed (\`$cmd\`), last lines:
+$(printf '%s\n' "$vout" | tail -n 40)
+Fix the code so it passes." || { echo "FAIL  $name  (see $log)"; return; }
+    done
   fi
+  echo "OK    $name  ($(git -C "$ROOT" rev-list --count "$BASE..task/$name") commits)"
 }
 
 cmd_run() {
@@ -145,11 +196,11 @@ cmd_run() {
   command -v python3 >/dev/null || die "python3 not found in PATH"
   [ -z "$(git -C "$ROOT" status --porcelain --untracked-files=no)" ] \
     || die "uncommitted changes in $ROOT; worktrees start from $BASE, so commit or stash first"
-  DIR=$(realpath "$1") JOBS=${2:-${AGY_JOBS:-4}} AGY_TIMEOUT=${AGY_TIMEOUT:-30m}
+  DIR=$(realpath "$1") JOBS=${2:-${AGY_JOBS:-4}} AGY_TIMEOUT=${AGY_TIMEOUT:-30m} AGY_RETRIES=${AGY_RETRIES:-2}
   RUN=${AGY_RUN:-$(date +%Y%m%d-%H%M)} MEMORY=${AGY_MEMORY:-0} HAVE_MEM=0
   command -v ai-memory >/dev/null && { HAVE_MEM=1; memory_scope; }
   [ "$MEMORY" != 1 ] || [ "$HAVE_MEM" = 1 ] || die "AGY_MEMORY=1 but ai-memory not found in PATH"
-  export DIR AGY_TIMEOUT RUN MEMORY HAVE_MEM WORKSPACE PROJECT
+  export DIR AGY_TIMEOUT AGY_RETRIES RUN MEMORY HAVE_MEM WORKSPACE PROJECT
 
   local exclude f name wt
   exclude=$(git -C "$ROOT" rev-parse --git-path info/exclude)
@@ -162,9 +213,17 @@ cmd_run() {
 
   list_tasks "$DIR"
   [ ${#TASKS[@]} -gt 0 ] || die "no task *.md in $DIR"
-  for f in "${TASKS[@]}"; do  # validate + create worktrees serially: parallel `worktree add` races on git locks
-    name=$(basename "$f" .md); wt="$ROOT/.worktrees/$name"
+  local spec
+  for f in "${TASKS[@]}"; do  # validate all before creating any worktree
+    name=$(basename "$f" .md)
     git check-ref-format --branch "task/$name" >/dev/null 2>&1 || die "bad task name '$name' (must be a valid branch name)"
+    spec=$(field "$f" Spec); spec=${spec#./}
+    [ -n "$spec" ] || die "task '$name' has no Spec: line"
+    git -C "$ROOT" cat-file -e "$BASE:$spec" 2>/dev/null || die "spec $spec (task '$name') is not committed on $BASE"
+    git -C "$ROOT" show "$BASE:$spec" | grep -q '^Status: approved' || die "spec $spec (task '$name') is not approved"
+  done
+  for f in "${TASKS[@]}"; do  # create worktrees serially: parallel `worktree add` races on git locks
+    name=$(basename "$f" .md); wt="$ROOT/.worktrees/$name"
     if [ ! -d "$wt" ]; then
       if git -C "$ROOT" show-ref -q --verify "refs/heads/task/$name"; then
         git -C "$ROOT" worktree add -q "$wt" "task/$name"
@@ -179,7 +238,7 @@ cmd_run() {
   done
 
   echo "running ${#TASKS[@]} tasks, $JOBS at a time, base=$BASE, run=$RUN$([ -f "$DIR/_plan.md" ] && echo ", plan=_plan.md")$([ "$MEMORY" = 1 ] && echo ", notes=$WORKSPACE/$PROJECT")"
-  export -f run_one response
+  export -f run_one agy_once response field verify_cmd
   summary=$(mktemp); trap 'rm -f "$summary"' EXIT
   printf '%s\0' "${TASKS[@]}" | xargs -0 -P "$JOBS" -I{} bash -c 'run_one "$1"' _ {} | tee "$summary"
   local ok fail

@@ -1,6 +1,6 @@
 {
   "name": "agy-delegate",
-  "version": "0.4.0",
+  "version": "1.0.0",
   "description": "Claude Code or Codex plans and reviews; Antigravity CLI (agy) runs tasks in parallel git worktrees, with optional shared memory via ai-memory.",
   "author": {
     "name": "HQuan1428",

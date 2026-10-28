@@ -5,9 +5,16 @@ Plugin for Claude Code and Codex: the lead agent plans, splits work into tasks a
 - `bin/agy-fanout run <tasks-dir> [jobs]`: runs every `*.md` in the dir through `agy -p --dangerously-skip-permissions`, one worktree/branch (`task/<name>`) per task, `jobs` at a time (default 4). `<tasks-dir>/_plan.md` is not a task: it is prepended to every task prompt (shared context, written once).
 - `agy-fanout review <tasks-dir>`: one compact report for the whole batch: OK/FAIL, diffstat, changed files outside the task's `Files:` line, result of its `Verify:` command run in the worktree, log tail on FAIL. Exits 1 on any problem.
 - `agy-fanout status` lists task branches, `clean` removes merged ones.
-- `skills/delegate`: the plan → split → run → review → merge workflow (`/agy-delegate:delegate` in Claude Code, `$agy-delegate:delegate` in Codex).
+- `skills/delegate`: the spec → plan → split → run → review → merge workflow (`/agy-delegate:delegate` in Claude Code, `$agy-delegate:delegate` in Codex).
 
-Env: `AGY_JOBS` (default 4), `AGY_TIMEOUT` (per task, default `30m`), `AGY_MEMORY=1` (save worker reports to ai-memory), `AGY_RUN` (memory run id, default timestamp).
+## Spec and tests
+
+- **Spec-driven:** every task has a `Spec: specs/<slug>.md` line. The spec (goal, scope, interface, acceptance criteria `AC-n`) is the contract between the dev and the lead agent. `run` refuses a task unless its spec is committed on the base branch with `Status: approved`, and only the dev approves.
+- **Test-driven (opt-in per task):** a task with a `Tests:` line is TDD. The lead agent commits red tests + stubs first. agy must not edit them and iterates until `Verify:` passes; `run` re-runs agy with the failure while `Verify:` is red, up to `AGY_RETRIES` times. `review` flags changed test files, ACs named in the task with no test, and `SPEC-ISSUE:` lines from the worker.
+
+**Breaking in 1.0.0:** tasks without an approved `Spec:` are rejected.
+
+Env: `AGY_JOBS` (default 4), `AGY_TIMEOUT` (per task, default `30m`), `AGY_RETRIES` (TDD re-runs, default 2), `AGY_MEMORY=1` (save worker reports to ai-memory), `AGY_RUN` (memory run id, default timestamp).
 
 Why this shape: the lead agent's cost is roughly tool calls × conversation size, so `_plan.md` saves writing shared context N times and `review` turns several calls per task into one.
 
