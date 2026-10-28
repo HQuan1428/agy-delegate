@@ -33,6 +33,30 @@ codex plugin add agy-delegate@agy-delegate
 ```
 In Codex, `agy-fanout run` needs network, so approve it running outside the sandbox.
 
+## Update to the latest version
+
+Releases: https://github.com/HQuan1428/agy-delegate/releases.
+
+Claude Code (refresh the marketplace, then the plugin; restart Claude Code after):
+```bash
+claude plugin marketplace update agy-delegate
+claude plugin update agy-delegate@agy-delegate
+```
+
+Codex (refresh the marketplace snapshot, re-add the plugin, start a new session):
+```bash
+codex plugin marketplace upgrade agy-delegate
+codex plugin add agy-delegate@agy-delegate
+```
+
+### Upgrading from 0.x to 1.0.0
+1.0.0 is breaking: `agy-fanout run` rejects any task without an approved spec. Before re-running old task files:
+1. Write `specs/<slug>.md` with a `Status: approved` line and commit it on the base branch.
+2. Add `Spec: specs/<slug>.md` to every task file.
+3. Optional: turn tasks test-first by committing red tests and adding a `Tests:` line (see "Spec and tests").
+
+Task branches and worktrees from older runs keep working with `review`, `status` and `clean`.
+
 Requires `agy`, `git`, `python3`. Optionally put `bin/` on your `PATH` to call `agy-fanout` directly.
 
 ## Shared memory (optional)
