@@ -1,0 +1,11 @@
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  self-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bin/agy-fanout-test.sh
